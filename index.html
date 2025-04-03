@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Modrinth Maven Deps Generator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+  <div class="container mx-auto px-4 py-8 max-w-4xl">
+    <h1 class="text-3xl font-bold text-center mb-8 text-emerald-700">Modrinth Maven Deps Checker</h1>
+    <p class="text-center text-gray-600 mb-8">Fabric Loader Only</p>
+
+    <div class="bg-white rounded-lg shadow-md p-6 mb-8">
+      <form id="versionForm" class="space-y-4">
+        <div>
+          <label for="projectSlugs" class="block text-sm font-medium text-gray-700 mb-1">Project Slugs (one per line)</label>
+          <textarea
+            id="projectSlugs"
+            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            rows="5"
+            placeholder="fabric-api&#10;sodium&#10;lithium"
+            required
+          ></textarea>
+        </div>
+
+        <div>
+          <label for="minecraftVersion" class="block text-sm font-medium text-gray-700 mb-1">Minecraft Version</label>
+          <input
+            type="text"
+            id="minecraftVersion"
+            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            placeholder="1.20.1"
+            required
+          >
+        </div>
+
+        <button
+          type="submit"
+          class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2 px-4 rounded-md transition duration-150 ease-in-out"
+        >
+          Check Versions
+        </button>
+      </form>
+    </div>
+
+    <div id="loadingIndicator" class="hidden">
+      <div class="flex justify-center items-center py-8">
+        <svg class="animate-spin h-8 w-8 text-emerald-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+        </svg>
+        <span class="ml-3 text-lg text-gray-700">Fetching versions...</span>
+      </div>
+    </div>
+
+    <div id="results" class="hidden space-y-4">
+      <h2 class="text-xl font-semibold text-gray-800 mb-2">Results</h2>
+      <div id="resultsList" class="space-y-3"></div>
+
+      <div id="depsCodeBlockContainer" class="mt-8 hidden">
+        <h3 class="text-lg font-semibold text-gray-800 mb-2">Dependencies Code Block</h3>
+        <div class="relative">
+          <pre id="depsCodeBlock" class="bg-gray-800 text-gray-100 p-4 rounded-md overflow-x-auto"></pre>
+          <button
+            id="copyButton"
+            class="absolute top-2 right-2 bg-gray-700 hover:bg-gray-600 text-white text-sm py-1 px-2 rounded"
+            onclick="copyToClipboard()"
+          >
+            Copy
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="error" class="hidden bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mt-6 rounded">
+      <p id="errorMessage"></p>
+    </div>
+  </div>
+
+  <script>
+    const projectSlugsTextarea = document.getElementById('projectSlugs');
+    const minecraftVersionInput = document.getElementById('minecraftVersion');
+    const versionForm = document.getElementById('versionForm');
+    const loadingIndicator = document.getElementById('loadingIndicator');
+    const resultsContainer = document.getElementById('results');
+    const resultsList = document.getElementById('resultsList');
+    const errorContainer = document.getElementById('error');
+    const errorMessage = document.getElementById('errorMessage');
+    const depsCodeBlockContainer = document.getElementById('depsCodeBlockContainer');
+    const depsCodeBlock = document.getElementById('depsCodeBlock');
+    const copyButton = document.getElementById('copyButton');
+
+    // --- URL Parameter Handling ---
+
+    function updateUrlParams(slugsArray, mcVersion) {
+        const params = new URLSearchParams();
+        if (slugsArray && slugsArray.length > 0) {
+            params.set('slugs', slugsArray.join(',')); // Join with comma for URL
+        }
+        if (mcVersion) {
+            params.set('mcVersion', mcVersion);
+        }
+
+        const newRelativePathQuery = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+        history.replaceState(null, '', newRelativePathQuery); // Use replaceState to avoid bloating history
+    }
+
+    function loadParamsFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const slugsParam = params.get('slugs');
+        const mcVersionParam = params.get('mcVersion');
+        let paramsLoaded = false;
+
+        if (slugsParam) {
+            // Split by comma, filter empty, join with newline for textarea
+            projectSlugsTextarea.value = slugsParam.split(',')
+                                            .map(s => s.trim())
+                                            .filter(s => s)
+                                            .join('\n');
+            paramsLoaded = true;
+        }
+
+        if (mcVersionParam) {
+            minecraftVersionInput.value = mcVersionParam.trim();
+             paramsLoaded = paramsLoaded && true; // Both must be present for auto-submit
+        } else {
+            paramsLoaded = false; // If only slugs are present, don't auto-submit
+        }
+
+        return paramsLoaded && projectSlugsTextarea.value.trim() !== '' && minecraftVersionInput.value.trim() !== '';
+    }
+
+    // --- Core Logic ---
+
+    async function handleFormSubmit(event) {
+      if(event) event.preventDefault(); // Prevent default only if triggered by form event
+
+      // Get input values
+      const projectSlugsText = projectSlugsTextarea.value;
+      const minecraftVersion = minecraftVersionInput.value.trim();
+
+      // Split project slugs by newline, trim, and filter out empty lines
+      const projectSlugsArray = projectSlugsText
+        .split('\n')
+        .map(slug => slug.trim())
+        .filter(slug => slug.length > 0);
+
+      if (projectSlugsArray.length === 0) {
+        showError('Please enter at least one project slug.');
+        return;
+      }
+
+      if (!minecraftVersion) {
+        showError('Please enter a Minecraft version.');
+        return;
+      }
+
+      // *** Update URL parameters BEFORE fetching ***
+      updateUrlParams(projectSlugsArray, minecraftVersion);
+
+      // Show loading indicator
+      loadingIndicator.classList.remove('hidden');
+      resultsContainer.classList.add('hidden');
+      errorContainer.classList.add('hidden');
+      depsCodeBlockContainer.classList.add('hidden');
+
+      try {
+        const results = await Promise.all(
+          projectSlugsArray.map(async (slug) => {
+            try {
+              // Add loaders=["fabric"] to only get Fabric versions
+              const apiUrl = `https://api.modrinth.com/v2/project/${slug}/version?game_versions=["${minecraftVersion}"]&loaders=["fabric"]`;
+              const response = await fetch(apiUrl);
+
+              if (!response.ok) {
+                if (response.status === 404) {
+                  return { slug, error: 'Project not found or no matching version' }; // More specific message
+                }
+                // Try to get error message from Modrinth API response
+                let errorData = null;
+                try {
+                  errorData = await response.json();
+                } catch (e) {/* Ignore JSON parsing error */}
+                const errorDetail = errorData?.description ? `: ${errorData.description}` : ` (Status: ${response.status})`;
+                throw new Error(`API error${errorDetail}`);
+              }
+
+              const versions = await response.json();
+
+              if (versions.length === 0) {
+                  // This case might be redundant due to the 404 handling above, but kept for safety
+                 return { slug, error: `No Fabric version found for MC ${minecraftVersion}` };
+              }
+
+              // Sort versions by date_published (newest first) - API should already do this, but sorting ensures it
+              versions.sort((a, b) => new Date(b.date_published) - new Date(a.date_published));
+
+              // Get the latest version (already filtered by API)
+              const latestVersion = versions[0];
+
+              // Optional: Double-check loaders (should be redundant)
+              if (!latestVersion.loaders.includes('fabric')) {
+                  console.warn(`Version ${latestVersion.id} for ${slug} unexpectedly missing 'fabric' loader despite API filter.`);
+                 return { slug, error: `Latest version found isn't for Fabric` };
+              }
+
+              return {
+                slug,
+                version: {
+                  name: latestVersion.name,
+                  versionNumber: latestVersion.version_number,
+                  id: latestVersion.id,
+                  loaders: latestVersion.loaders, // Keep for potential future use
+                  datePublished: new Date(latestVersion.date_published).toLocaleDateString()
+                }
+              };
+            } catch (error) {
+              console.error(`Error fetching ${slug}:`, error);
+              // Ensure a user-friendly message, avoid exposing raw fetch errors if possible
+              const message = error.message.startsWith('API error') ? error.message : 'Failed to fetch';
+              return { slug, error: message };
+            }
+          })
+        );
+
+        // Display results
+        displayResults(results);
+
+        // Generate and display deps code block
+        generateDepsCodeBlock(results);
+      } catch (error) {
+         // Catch errors from Promise.all itself (less likely now with individual try/catch)
+        showError(`An unexpected error occurred: ${error.message}`);
+      } finally {
+        loadingIndicator.classList.add('hidden');
+      }
+    }
+
+    function displayResults(results) {
+      resultsList.innerHTML = ''; // Clear previous results
+
+      results.forEach(result => {
+        const resultElement = document.createElement('div');
+        resultElement.className = 'bg-white rounded-lg shadow p-4';
+
+        if (result.error) {
+          resultElement.innerHTML = `
+            <div class="flex items-center">
+              <div class="flex-1">
+                <h3 class="font-bold text-lg text-gray-800">${result.slug}</h3>
+                <p class="text-red-600">Error: ${result.error}</p>
+              </div>
+              <a href="https://modrinth.com/mod/${result.slug}" target="_blank" rel="noopener noreferrer" class="ml-4 text-emerald-600 hover:text-emerald-800" title="Go to Modrinth page">
+                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"> <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /> </svg>
+              </a>
+            </div>
+          `;
+        } else if (!result.version) {
+             // This state should ideally not be reached often due to improved error handling
+          resultElement.innerHTML = `
+             <div class="flex items-center">
+               <div class="flex-1">
+                 <h3 class="font-bold text-lg text-gray-800">${result.slug}</h3>
+                 <p class="text-amber-600">No specific version data found (check logs)</p>
+               </div>
+                <a href="https://modrinth.com/mod/${result.slug}" target="_blank" rel="noopener noreferrer" class="ml-4 text-emerald-600 hover:text-emerald-800" title="Go to Modrinth page">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"> <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /> </svg>
+                </a>
+             </div>
+           `;
+        } else {
+          resultElement.innerHTML = `
+            <div class="flex items-center">
+              <div class="flex-1">
+                <h3 class="font-bold text-lg text-gray-800">${result.slug}</h3>
+                <p class="text-gray-600" title="Version ID: ${result.version.id}">${result.version.name} (${result.version.versionNumber})</p>
+                <p class="text-sm text-gray-500">Published: ${result.version.datePublished}</p>
+                 <div class="mt-1">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800">
+                    fabric
+                  </span>
+                </div>
+              </div>
+              <a href="https://modrinth.com/mod/${result.slug}/version/${result.version.id}" target="_blank" rel="noopener noreferrer" class="ml-4 text-emerald-600 hover:text-emerald-800" title="Go to version page on Modrinth">
+                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"> <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /> </svg>
+              </a>
+            </div>
+          `;
+        }
+
+        resultsList.appendChild(resultElement);
+      });
+
+      resultsContainer.classList.remove('hidden');
+    }
+
+    function generateDepsCodeBlock(results) {
+      const validResults = results.filter(result => result.version && !result.error);
+
+      if (validResults.length === 0) {
+        depsCodeBlockContainer.classList.add('hidden');
+        return;
+      }
+
+      const depsLines = validResults.map(result => `deps.${result.slug}=${result.version.id}`);
+      const depsText = depsLines.join('\n');
+
+      depsCodeBlock.textContent = depsText;
+      depsCodeBlockContainer.classList.remove('hidden');
+    }
+
+    function copyToClipboard() {
+      const textToCopy = depsCodeBlock.textContent;
+
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        const originalText = copyButton.textContent;
+
+        copyButton.textContent = 'Copied!';
+        copyButton.classList.add('bg-emerald-600', 'text-white');
+        copyButton.classList.remove('bg-gray-700', 'hover:bg-gray-600');
+
+        setTimeout(() => {
+          copyButton.textContent = originalText;
+          copyButton.classList.remove('bg-emerald-600', 'text-white');
+          copyButton.classList.add('bg-gray-700', 'hover:bg-gray-600');
+        }, 2000);
+      }).catch(err => {
+        console.error('Failed to copy text: ', err);
+        alert('Failed to copy text. Please copy manually.'); // Provide feedback
+      });
+    }
+
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorContainer.classList.remove('hidden');
+      resultsContainer.classList.add('hidden'); // Hide results on error
+      depsCodeBlockContainer.classList.add('hidden'); // Hide deps block on error
+    }
+
+    // --- Initialization ---
+    document.addEventListener('DOMContentLoaded', () => {
+        versionForm.addEventListener('submit', handleFormSubmit);
+
+        // Load parameters from URL and auto-submit if both are present
+        const shouldAutoSubmit = loadParamsFromUrl();
+        if (shouldAutoSubmit) {
+            console.log("URL parameters found, auto-submitting form.");
+            // Use a small timeout to ensure the DOM is fully ready and avoid potential race conditions
+            setTimeout(() => handleFormSubmit(null), 50);
+        }
+    });
+
+  </script>
+</body>
+</html>
