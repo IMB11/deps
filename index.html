@@ -9,8 +9,6 @@
 <body class="bg-gray-100 min-h-screen">
   <div class="container mx-auto px-4 py-8 max-w-4xl">
     <h1 class="text-3xl font-bold text-center mb-8 text-emerald-700">Modrinth Maven Deps Checker</h1>
-    <p class="text-center text-gray-600 mb-8">Fabric Loader Only</p>
-
     <div class="bg-white rounded-lg shadow-md p-6 mb-8">
       <form id="versionForm" class="space-y-4">
         <div>
@@ -33,6 +31,19 @@
             placeholder="1.20.1"
             required
           >
+        </div>
+
+        <div>
+          <label for="loaderSelect" class="block text-sm font-medium text-gray-700 mb-1">Mod Loader</label>
+          <select
+            id="loaderSelect"
+            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            required
+          >
+            <option value="fabric">Fabric</option>
+            <option value="neoforge">NeoForge</option>
+            <option value="forge">Forge</option>
+          </select>
         </div>
 
         <button
@@ -81,6 +92,7 @@
   <script>
     const projectSlugsTextarea = document.getElementById('projectSlugs');
     const minecraftVersionInput = document.getElementById('minecraftVersion');
+    const loaderSelect = document.getElementById('loaderSelect');
     const versionForm = document.getElementById('versionForm');
     const loadingIndicator = document.getElementById('loadingIndicator');
     const resultsContainer = document.getElementById('results');
@@ -93,13 +105,16 @@
 
     // --- URL Parameter Handling ---
 
-    function updateUrlParams(slugsArray, mcVersion) {
+    function updateUrlParams(slugsArray, mcVersion, loader) {
         const params = new URLSearchParams();
         if (slugsArray && slugsArray.length > 0) {
             params.set('slugs', slugsArray.join(',')); // Join with comma for URL
         }
         if (mcVersion) {
             params.set('mcVersion', mcVersion);
+        }
+        if (loader) {
+            params.set('loader', loader);
         }
 
         const newRelativePathQuery = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
@@ -110,6 +125,7 @@
         const params = new URLSearchParams(window.location.search);
         const slugsParam = params.get('slugs');
         const mcVersionParam = params.get('mcVersion');
+        const loaderParam = params.get('loader');
         let paramsLoaded = false;
 
         if (slugsParam) {
@@ -128,7 +144,14 @@
             paramsLoaded = false; // If only slugs are present, don't auto-submit
         }
 
-        return paramsLoaded && projectSlugsTextarea.value.trim() !== '' && minecraftVersionInput.value.trim() !== '';
+        if (loaderParam) {
+            loaderSelect.value = loaderParam.trim();
+            paramsLoaded = paramsLoaded && true; // All must be present for auto-submit
+        } else {
+            paramsLoaded = false; // If only slugs and mcVersion are present, don't auto-submit
+        }
+
+        return paramsLoaded && projectSlugsTextarea.value.trim() !== '' && minecraftVersionInput.value.trim() !== '' && loaderSelect.value.trim() !== '';
     }
 
     // --- Core Logic ---
@@ -139,6 +162,7 @@
       // Get input values
       const projectSlugsText = projectSlugsTextarea.value;
       const minecraftVersion = minecraftVersionInput.value.trim();
+      const loader = loaderSelect.value.trim();
 
       // Split project slugs by newline, trim, and filter out empty lines
       const projectSlugsArray = projectSlugsText
@@ -156,8 +180,13 @@
         return;
       }
 
+      if (!loader) {
+        showError('Please select a mod loader.');
+        return;
+      }
+
       // *** Update URL parameters BEFORE fetching ***
-      updateUrlParams(projectSlugsArray, minecraftVersion);
+      updateUrlParams(projectSlugsArray, minecraftVersion, loader);
 
       // Show loading indicator
       loadingIndicator.classList.remove('hidden');
@@ -169,8 +198,8 @@
         const results = await Promise.all(
           projectSlugsArray.map(async (slug) => {
             try {
-              // Add loaders=["fabric"] to only get Fabric versions
-              const apiUrl = `https://api.modrinth.com/v2/project/${slug}/version?game_versions=["${minecraftVersion}"]&loaders=["fabric"]`;
+              // Add loaders parameter to get versions for the selected loader
+              const apiUrl = `https://api.modrinth.com/v2/project/${slug}/version?game_versions=["${minecraftVersion}"]&loaders=["${loader}"]`;
               const response = await fetch(apiUrl);
 
               if (!response.ok) {
@@ -190,7 +219,7 @@
 
               if (versions.length === 0) {
                   // This case might be redundant due to the 404 handling above, but kept for safety
-                 return { slug, error: `No Fabric version found for MC ${minecraftVersion}` };
+                 return { slug, error: `No ${loader} version found for MC ${minecraftVersion}` };
               }
 
               // Sort versions by date_published (newest first) - API should already do this, but sorting ensures it
@@ -200,9 +229,9 @@
               const latestVersion = versions[0];
 
               // Optional: Double-check loaders (should be redundant)
-              if (!latestVersion.loaders.includes('fabric')) {
-                  console.warn(`Version ${latestVersion.id} for ${slug} unexpectedly missing 'fabric' loader despite API filter.`);
-                 return { slug, error: `Latest version found isn't for Fabric` };
+              if (!latestVersion.loaders.includes(loader)) {
+                  console.warn(`Version ${latestVersion.id} for ${slug} unexpectedly missing '${loader}' loader despite API filter.`);
+                 return { slug, error: `Latest version found isn't for ${loader}` };
               }
 
               return {
@@ -278,7 +307,7 @@
                 <p class="text-sm text-gray-500">Published: ${result.version.datePublished}</p>
                  <div class="mt-1">
                   <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800">
-                    fabric
+                    ${loader}
                   </span>
                 </div>
               </div>
@@ -342,7 +371,7 @@
     document.addEventListener('DOMContentLoaded', () => {
         versionForm.addEventListener('submit', handleFormSubmit);
 
-        // Load parameters from URL and auto-submit if both are present
+        // Load parameters from URL and auto-submit if all are present
         const shouldAutoSubmit = loadParamsFromUrl();
         if (shouldAutoSubmit) {
             console.log("URL parameters found, auto-submitting form.");
