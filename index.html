@@ -268,6 +268,7 @@
 
     function displayResults(results) {
       resultsList.innerHTML = ''; // Clear previous results
+      const selectedLoader = loaderSelect.value; // Get the current selected loader
 
       results.forEach(result => {
         const resultElement = document.createElement('div');
@@ -307,7 +308,7 @@
                 <p class="text-sm text-gray-500">Published: ${result.version.datePublished}</p>
                  <div class="mt-1">
                   <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-100 text-emerald-800">
-                    ${loader}
+                    ${selectedLoader}
                   </span>
                 </div>
               </div>
