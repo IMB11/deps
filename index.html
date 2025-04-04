@@ -333,7 +333,7 @@
         return;
       }
 
-      const depsLines = validResults.map(result => `deps.${result.slug}=${result.version.id}`);
+      const depsLines = validResults.map(result => `deps.${result.slug}=${result.version.versionNumber}`);
       const depsText = depsLines.join('\n');
 
       depsCodeBlock.textContent = depsText;
